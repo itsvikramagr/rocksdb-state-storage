@@ -355,10 +355,10 @@ class OptimisticTransactionDbInstance(
   def printTrxStats(): Unit = {
     require(txn != null, "No open Transaction")
     logInfo(s"""
-         | deletes = ${txn.getNumDeletes}
-         | numKeys = ${txn.getNumKeys}
-         | puts =  ${txn.getNumPuts}
-         | time =  ${txn.getElapsedTime}
+               | deletes = ${txn.getNumDeletes}
+               | numKeys = ${txn.getNumKeys}
+               | puts =  ${txn.getNumPuts}
+               | time =  ${txn.getElapsedTime}
        """.stripMargin)
   }
 

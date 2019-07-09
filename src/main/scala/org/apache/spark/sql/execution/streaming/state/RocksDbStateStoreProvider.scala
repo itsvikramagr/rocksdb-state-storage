@@ -80,11 +80,11 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
 
     var rocksDbWriteInstance: OptimisticTransactionDbInstance = null
 
-   /*
-    * numEntriesInDb and bytesUsedByDb are estimated value
-    * due to the nature of RocksDB implementation.
-    * see https://github.com/facebook/rocksdb/wiki/RocksDB-FAQ for more details
-    */
+    /*
+     * numEntriesInDb and bytesUsedByDb are estimated value
+     * due to the nature of RocksDB implementation.
+     * see https://github.com/facebook/rocksdb/wiki/RocksDB-FAQ for more details
+     */
     var numEntriesInDb: Long = 0L
     var bytesUsedByDb: Long = 0L
 
@@ -139,11 +139,11 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
         s"Current state of the store is $state " +
           s"Cannot commit after already committed or aborted")
       try {
-        state = COMMITTED
         synchronized {
           rocksDbWriteInstance.commit(Some(getBackupPath(newVersion)))
           finalizeDeltaFile(compressedStream)
         }
+        state = COMMITTED
         numEntriesInDb = rocksDbWriteInstance.otdb.getLongProperty("rocksdb.estimate-num-keys")
         bytesUsedByDb = numEntriesInDb * (keySchema.defaultSize + valueSchema.defaultSize)
         newVersion
@@ -232,10 +232,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
           // just allow searching from list cause the list is small enough
           supportedCustomMetrics.find(_.name == name).map(_ -> value)
       }
-      StateStoreMetrics(
-        Math.max(numEntriesInDb, 0),
-        Math.max(bytesUsedByDb, 0),
-        customMetrics)
+      StateStoreMetrics(Math.max(numEntriesInDb, 0), Math.max(bytesUsedByDb, 0), customMetrics)
     }
 
     /*
@@ -400,8 +397,12 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
         for (deltaVersion <- (lastAvailableVersion + 1) to version) {
           val fileToRead = deltaFile(baseDir, deltaVersion)
           updateFromDeltaFile(
-            fm, fileToRead, keySchema, valueSchema,
-            rocksDbWriteInstance, sparkConf)
+            fm,
+            fileToRead,
+            keySchema,
+            valueSchema,
+            rocksDbWriteInstance,
+            sparkConf)
           logInfo(s"Read delta file for version $version of $this from $fileToRead")
         }
 
@@ -478,15 +479,13 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
         val dbPath = getBackupPath(lastVersion)
         val snapShotFileName = s"{getTempPath(lastVersion)}.snapshot"
         val f = new File(snapShotFileName)
-        f.delete() // delete any existing tarball
         try {
           val (_, t1) = Utils.timeTakenMs {
             FileUtility.createTarFile(dbPath, snapShotFileName)
             val targetFile = snapshotFile(baseDir, lastVersion)
             uploadFile(fm, new Path(snapShotFileName), targetFile, sparkConf)
           }
-          logInfo(
-            s"Creating snapshot file for ${stateStoreId_.partitionId} took $t1 ms.")
+          logInfo(s"Creating snapshot file for ${stateStoreId_.partitionId} took $t1 ms.")
         } catch {
           case e: Exception =>
             logError(s"Exception while creating snapshot $e")
@@ -536,7 +535,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
       if (files.nonEmpty) {
         val earliestVersionToRetain = files.last.version - storeConf.minVersionsToRetain
         if (earliestVersionToRetain > 0) {
-          for (v <- (earliestVersionToRetain - 1) to 1) {
+          for (v <- (earliestVersionToRetain - 1) to 1 by -1) {
             // Destroy the backup path
             logDebug(s"Destroying backup version = $v")
             RocksDbInstance.destroyDB(getBackupPath(v))
@@ -571,7 +570,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
   }
 
   // making it public for unit tests
-  lazy val rocksDbPath: String = {
+  private[sql] lazy val rocksDbPath: String = {
     val checkpointRootLocationPath = new Path(stateStoreId.checkpointRootLocation)
     val basePath = new Path(
       localDirectory,
