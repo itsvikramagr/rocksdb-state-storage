@@ -106,7 +106,7 @@ class RocksDbStateStoreSuite
     assert(originValueMap === expectedData)
   }
 
-  test("get, put, remove, commit, and all data iterator") {
+  test("New get, put, remove, commit, and all data iterator") {
     val provider = newStoreProvider()
 
     // Verify state before starting a new set of updates

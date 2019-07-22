@@ -100,6 +100,10 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
     }
 
     override def get(key: UnsafeRow): UnsafeRow = {
+      if (state == LOADED && rocksDbWriteInstance == null) {
+        logInfo(s"Get is going to start transanction")
+        logInfo(s"key = $key")
+      }
       initTransaction()
       rocksDbWriteInstance.get(key)
     }
@@ -144,7 +148,12 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
           finalizeDeltaFile(compressedStream)
         }
         state = COMMITTED
-        numEntriesInDb = rocksDbWriteInstance.otdb.getLongProperty("rocksdb.estimate-num-keys")
+        //val baseDB = rocksDbWriteInstance.otdb.getBaseDB
+        val db = rocksDbWriteInstance.otdb.asInstanceOf[org.rocksdb.RocksDB]
+        numEntriesInDb = db.getProperty(
+          db.getDefaultColumnFamily, "rocksdb.estimate-num-keys").toLong
+        numEntriesInDb = rocksDbWriteInstance.otdb.asInstanceOf[org.rocksdb.RocksDB].getLongProperty(
+          "rocksdb.estimate-num-keys")
         bytesUsedByDb = numEntriesInDb * (keySchema.defaultSize + valueSchema.defaultSize)
         newVersion
       } catch {
@@ -250,7 +259,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
 
   /*
    * Initialize the provider with more contextual information from the SQL operator.
-   * This method will be called first after creating an instance of the StateStoreProvider by
+   * This method wil  l be called first after creating an instance of the StateStoreProvider by
    * reflection.
    *
    * @param stateStoreId    Id of the versioned StateStores that this provider will generate

@@ -20,6 +20,8 @@ package org.apache.spark.sql.execution.streaming.state
 import java.io.File
 import java.util.Locale
 
+import scala.collection.JavaConverters._
+
 import org.apache.commons.io.FileUtils
 import org.rocksdb._
 import org.rocksdb.RocksDB
@@ -42,6 +44,10 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
   protected val writeOptions: WriteOptions = new WriteOptions()
   protected val table_options = new BlockBasedTableConfig
   protected val options: Options = new Options()
+  protected val dbStats = new Statistics()
+  dbStats.setStatsLevel(StatsLevel.ALL)
+  protected val bloomFilter = new BloomFilter(10, false)
+  //protected val rateLimiter = new RateLimiter(1024000)
 
   def isOpen(): Boolean = {
     db != null
@@ -97,11 +103,34 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
   }
 
   def close(): Unit = {
-    readOptions.close()
-    writeOptions.close()
     logDebug("Closing the db")
-    db.close()
-    db = null
+    try {
+      dbStats.close()
+      db.close()
+    } finally {
+      db = null
+      options.close()
+      readOptions.close()
+      writeOptions.close()
+      bloomFilter.close()
+    }
+  }
+
+  def printMemoryStats(db: RocksDB): Unit = {
+    require(isOpen(), "Open rocksDb instance before any operation")
+    logDebug("Inside printMemoryStats")
+    val usage = MemoryUtil.getApproximateMemoryUsageByType(
+    //  List(db).asJava, Set(lRUCache.asInstanceOf[Cache]).asJava).asScala
+      List(db).asJava, Set.empty[Cache].asJava).asScala
+
+    logInfo(s"""
+               | size-all-mem-tables = ${db.getProperty(db.getDefaultColumnFamily,"rocksdb.size-all-mem-tables")}
+               | cur-size-all-mem-tables = ${db.getProperty(db.getDefaultColumnFamily,"rocksdb.cur-size-all-mem-tables")}
+               | rocksdb.num-running-compactions = ${db.getProperty(db.getDefaultColumnFamily,"rocksdb.num-running-compactions")}
+               | rocksdb.estimate-table-readers-mem = ${db.getProperty(db.getDefaultColumnFamily,"rocksdb.estimate-table-readers-mem")}
+               | rocksdb.estimate-num-keys = ${db.getProperty(db.getDefaultColumnFamily,"rocksdb.estimate-num-keys")}
+               | ApproximateMemoryUsageByType = ${usage.toString}
+               | """.stripMargin)
   }
 
   def iterator(closeDbOnCompletion: Boolean): Iterator[UnsafeRowPair] = {
@@ -109,9 +138,9 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
     Option(db.getSnapshot) match {
       case Some(snapshot) =>
         logDebug(s"Inside rockdDB iterator function")
-        var snapshotReadOptions: ReadOptions = new ReadOptions().setSnapshot(snapshot)
+        var snapshotReadOptions: ReadOptions = new ReadOptions().setSnapshot(snapshot).setFillCache(false)
         val itr = db.newIterator(snapshotReadOptions)
-        createUnsafeRowPairIterator(itr, snapshotReadOptions, closeDbOnCompletion)
+        createUnsafeRowPairIterator(itr, snapshotReadOptions, snapshot, closeDbOnCompletion)
       case None =>
         Iterator.empty
     }
@@ -120,20 +149,30 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
   protected def createUnsafeRowPairIterator(
       itr: RocksIterator,
       itrReadOptions: ReadOptions,
+      snapshot: Snapshot,
       closeDbOnCompletion: Boolean): Iterator[UnsafeRowPair] = {
 
     itr.seekToFirst()
 
     new Iterator[UnsafeRowPair] {
+      @volatile var isClosed = false
       override def hasNext: Boolean = {
-        if (itr.isValid) {
+        if (!isClosed && itr.isValid) {
           true
         } else {
-          itrReadOptions.close()
-          if (closeDbOnCompletion) {
-            close()
+          if (!isClosed) {
+            isClosed = true
+            itrReadOptions.close()
+            logInfo("releasing Snapshot")
+            db.releaseSnapshot(snapshot)
+            logInfo("Closing Iterator now")
+             printMemoryStats(db)
+            if (closeDbOnCompletion) {
+              close()
+            }
+            itr.close()
+            logDebug(s"read from DB completed")
           }
-          logDebug(s"read from DB completed")
           false
         }
       }
@@ -174,32 +213,36 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
     val dataBlockSize = conf
       .getOrElse(
         "spark.sql.streaming.stateStore.rocksDb.blockSizeInKB".toLowerCase(Locale.ROOT),
-        "64")
+        "16")
       .toInt
 
+    /*
     val metadataBlockSize = conf
       .getOrElse(
         "spark.sql.streaming.stateStore.rocksDb.metadataBlockSizeInKB".toLowerCase(Locale.ROOT),
         "4")
       .toInt
+     */
 
     // Table configs
     // https://github.com/facebook/rocksdb/wiki/Partitioned-Index-Filters
     table_options
-      .setBlockSize(dataBlockSize)
-      .setBlockSizeDeviation(5)
-      .setMetadataBlockSize(metadataBlockSize)
-      .setFilterPolicy(new BloomFilter(10, false))
+      .setBlockSize(dataBlockSize * 1024)
+      // .setMetadataBlockSize(metadataBlockSize)
+      .setFilterPolicy(bloomFilter)
       .setPartitionFilters(true)
-      .setIndexType(IndexType.kTwoLevelIndexSearch)
-      .setBlockCache(lRUCache)
-      .setCacheIndexAndFilterBlocks(true)
-      .setPinTopLevelIndexAndFilter(true)
-      .setCacheIndexAndFilterBlocksWithHighPriority(true)
-      .setPinL0FilterAndIndexBlocksInCache(true)
+      .setIndexType(IndexType.kBinarySearch)
+      .setNoBlockCache(true)
+    //  .setIndexType(IndexType.kTwoLevelIndexSearch)
+    //  .setBlockCache(lRUCache)
+      .setCacheIndexAndFilterBlocks(false)
+      .setPinTopLevelIndexAndFilter(false)
+      .setCacheIndexAndFilterBlocksWithHighPriority(false)
+      .setPinL0FilterAndIndexBlocksInCache(false)
       .setFormatVersion(4) // https://rocksdb.org/blog/2019/03/08/format-version-4.html
-      .setIndexBlockRestartInterval(16)
+      .setDataBlockIndexType(DataBlockIndexType.kDataBlockBinaryAndHash)
 
+    /*
     var bufferNumber = conf
       .getOrElse(
         "spark.sql.streaming.stateStore.rocksDb.bufferNumber".toLowerCase(Locale.ROOT),
@@ -213,24 +256,32 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
     logInfo(
       s"Using Max Buffer Name = $bufferNumber & " +
         s"max buffer number to maintain = $bufferNumberToMaintain")
+    */
 
-    // DB Options
     options
       .setCreateIfMissing(true)
-      .setMaxWriteBufferNumber(bufferNumber)
-      .setMaxWriteBufferNumberToMaintain(bufferNumberToMaintain)
-      .setMaxBackgroundCompactions(4)
+      .setMaxWriteBufferNumber(4)
+      .setMaxWriteBufferNumberToMaintain(3)
+      .setMaxBackgroundCompactions(2)
       .setMaxBackgroundFlushes(2)
-      .setMaxOpenFiles(-1)
-      .setMaxFileOpeningThreads(4)
-      .setWriteBufferSize(256 * SizeUnit.MB)
-      .setTargetFileSizeBase(256 * SizeUnit.MB)
-      .setLevelZeroFileNumCompactionTrigger(10)
+      .setMaxOpenFiles(8)
+      .setMaxFileOpeningThreads(16)
+      .setMaxSubcompactions(4)
+      .setIncreaseParallelism(4)
+      .setWriteBufferSize(128 * SizeUnit.MB)
+      .setTargetFileSizeBase(128 * SizeUnit.MB)
+      .setLevelZeroFileNumCompactionTrigger(8)
       .setLevelZeroSlowdownWritesTrigger(20)
       .setLevelZeroStopWritesTrigger(40)
       .setMaxBytesForLevelBase(2 * SizeUnit.GB)
       .setTableFormatConfig(table_options)
-
+      .setStatistics(dbStats)
+      .setStatsDumpPeriodSec(30)
+      .setBytesPerSync(1048576)
+      .setCompressionType(CompressionType.NO_COMPRESSION)
+    //  .setUseDirectIoForFlushAndCompaction(true)
+    //  .setUseDirectReads(true)
+    //  .setRateLimiter(new RateLimiter(1024000))
   }
 
   def createCheckpoint(rocksDb: RocksDB, dir: String): Unit = {
@@ -245,22 +296,6 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
       c.close()
     }
     logDebug(s"Creating createCheckpoint at $dir took $elapsedMs ms.")
-  }
-
-  def createBackup(dir: String): Unit = {
-    require(isOpen(), "Open rocksDb instance before any operation")
-    val (result, elapsedMs) = Utils.timeTakenMs {
-      val backupableDBOptions = new BackupableDBOptions(dir)
-      backupableDBOptions.setDestroyOldData(true)
-      val env: Env = Env.getDefault
-      env.setBackgroundThreads(2)
-      val be = BackupEngine.open(env, backupableDBOptions)
-      be.createNewBackup(db, true) //
-      backupableDBOptions.close()
-      env.close()
-      be.close()
-    }
-    logInfo(s"Creating backup at $dir takes $elapsedMs ms.")
   }
 }
 
@@ -285,13 +320,15 @@ class OptimisticTransactionDbInstance(
   }
 
   override def open(path: String, conf: Map[String, String], readOnly: Boolean): Unit = {
-    require(otdb == null, "Another OptimisticTransactionDbInstance instance is already actve")
+    require(otdb == null, "Another OptimisticTransactionDbInstance instance is already active")
     require(readOnly == false, "Cannot open OptimisticTransactionDbInstance in Readonly mode")
     try {
       setOptions(conf)
       options.setCreateIfMissing(true)
       otdb = OptimisticTransactionDB.open(options, path)
+      db = otdb.getBaseDB
       dbPath = path
+      printMemoryStats(otdb.asInstanceOf[RocksDB])
     } catch {
       case e: Throwable =>
         throw new IllegalStateException(
@@ -341,10 +378,12 @@ class OptimisticTransactionDbInstance(
     try {
       val file = new File(dbPath, identifier.toUpperCase(Locale.ROOT))
       file.createNewFile()
+      logInfo("Committing the open TransactionalDB. Will close the txn")
+      printMemoryStats(otdb.asInstanceOf[RocksDB])
       txn.commit()
       txn.close()
       txn = null
-      backupPath.foreach(f => createCheckpoint(otdb.asInstanceOf[RocksDB], f))
+     // backupPath.foreach(f => createCheckpoint(otdb.asInstanceOf[RocksDB], f))
     } catch {
       case e: Exception =>
         log.error(s"Unable to commit the transactions. Error message = ${e.getMessage}")
@@ -371,24 +410,40 @@ class OptimisticTransactionDbInstance(
 
   override def close(): Unit = {
     require(isOpen(), "No DB to close")
-    readOptions.close()
-    writeOptions.close()
+    // require(txn == null, "Transaction should be closed before closing the DB connection")
+    logInfo("Closing the transactional DB")
+    printMemoryStats(otdb.asInstanceOf[RocksDB])
     logDebug("Closing the transaction db")
-    otdb.close()
-    otdb = null
+    try {
+      // otdb.flush(new FlushOptions())
+      dbStats.close()
+      otdb.close()
+      db.close()
+      otdb = null
+      db = null
+    } finally {
+      // rateLimiter.close()
+      options.close()
+      readOptions.close()
+      writeOptions.close()
+      bloomFilter.close()
+    }
   }
 
   override def iterator(closeDbOnCompletion: Boolean): Iterator[UnsafeRowPair] = {
     require(txn != null, "Transaction is not set")
     require(
       closeDbOnCompletion == false,
-      "Cannot close a DB without aborting/commiting the transactions")
-    val readOptions = new ReadOptions()
+      "Cannot close a DB without aborting/committing the transactions")
+    val snapshot = db.getSnapshot
+    val readOptions = new ReadOptions().setSnapshot(snapshot).setFillCache(false)
+    logInfo("Creating Iterator now")
+    printMemoryStats(otdb.asInstanceOf[RocksDB])
     val itr: RocksIterator = txn.getIterator(readOptions)
     Option(itr) match {
       case Some(i) =>
         logDebug(s"creating iterator from transaction DB")
-        createUnsafeRowPairIterator(i, readOptions, false)
+        createUnsafeRowPairIterator(i, readOptions, snapshot, false)
       case None =>
         Iterator.empty
     }
@@ -402,7 +457,7 @@ object RocksDbInstance {
 
   private val destroyOptions: Options = new Options()
 
-  val lRUCache = new LRUCache(1024 * 1024 * 1024, 6, false, 0.05)
+  //val lRUCache = new LRUCache(1024L * 1024 * 1024, 6, false, 0.5)
 
   def destroyDB(path: String): Unit = {
     val f: File = new File(path)
@@ -412,16 +467,5 @@ object RocksDbInstance {
     }
   }
 
-  def restoreFromBackup(backupDir: String, dbDir: String): Unit = {
-    val (result, elapsedMs) = Utils.timeTakenMs {
-      val backupableDBOptions = new BackupableDBOptions(backupDir)
-      val be = BackupEngine.open(Env.getDefault, backupableDBOptions)
-      val restoreOptions = new RestoreOptions(false)
-      be.restoreDbFromLatestBackup(dbDir, dbDir, restoreOptions)
-      restoreOptions.close()
-      backupableDBOptions.close()
-      be.close()
-    }
-  }
-
 }
+
