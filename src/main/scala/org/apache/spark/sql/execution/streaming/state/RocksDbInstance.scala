@@ -38,7 +38,7 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
   import RocksDbInstance._
   RocksDB.loadLibrary()
 
-  protected var db: RocksDB = null
+  var db: RocksDB = null
   protected var dbPath: String = _
   protected val readOptions: ReadOptions = new ReadOptions()
   protected val writeOptions: WriteOptions = new WriteOptions()
@@ -53,10 +53,11 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
     db != null
   }
 
-  def open(path: String, conf: Map[String, String], readOnly: Boolean): Unit = {
+  def open(path: String, conf: Map[String, String],
+           readOnly: Boolean, bulkUpload: Boolean = false): Unit = {
     require(db == null, "Another rocksDb instance is already active")
     try {
-      setOptions(conf)
+      setOptions(conf, bulkUpload)
       db = if (readOnly) {
         options.setCreateIfMissing(false)
         RocksDB.openReadOnly(options, path)
@@ -201,7 +202,7 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
     }
   }
 
-  def setOptions(conf: Map[String, String]): Unit = {
+  def setOptions(conf: Map[String, String], bulkUpload: Boolean): Unit = {
 
     // Read options
     readOptions.setFillCache(false)
@@ -258,6 +259,10 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
         s"max buffer number to maintain = $bufferNumberToMaintain")
     */
 
+    // options.setMemtablePrefixBloomSizeRatio(0.2)
+    // options.useCappedPrefixExtractor(4)
+    // options.prepareForBulkLoad()
+
     options
       .setCreateIfMissing(true)
       .setMaxWriteBufferNumber(4)
@@ -265,15 +270,14 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
       .setMaxBackgroundCompactions(2)
       .setMaxBackgroundFlushes(2)
       .setMaxOpenFiles(8)
-      .setMaxFileOpeningThreads(16)
-      .setMaxSubcompactions(4)
+     // .setMaxSubcompactions(4)
       .setIncreaseParallelism(4)
       .setWriteBufferSize(128 * SizeUnit.MB)
-      .setTargetFileSizeBase(128 * SizeUnit.MB)
-      .setLevelZeroFileNumCompactionTrigger(8)
+     // .setTargetFileSizeBase(128 * SizeUnit.MB)
+     // .setLevelZeroFileNumCompactionTrigger(8)
       .setLevelZeroSlowdownWritesTrigger(20)
       .setLevelZeroStopWritesTrigger(40)
-      .setMaxBytesForLevelBase(2 * SizeUnit.GB)
+      // .setMaxBytesForLevelBase(2 * SizeUnit.GB)
       .setTableFormatConfig(table_options)
       .setStatistics(dbStats)
       .setStatsDumpPeriodSec(30)
@@ -282,6 +286,12 @@ class RocksDbInstance(keySchema: StructType, valueSchema: StructType, identifier
     //  .setUseDirectIoForFlushAndCompaction(true)
     //  .setUseDirectReads(true)
     //  .setRateLimiter(new RateLimiter(1024000))
+      .setDisableAutoCompactions(true)
+
+    if (bulkUpload) {
+      options.prepareForBulkLoad()
+    }
+
   }
 
   def createCheckpoint(rocksDb: RocksDB, dir: String): Unit = {
@@ -319,11 +329,11 @@ class OptimisticTransactionDbInstance(
     open(path, conf, false)
   }
 
-  override def open(path: String, conf: Map[String, String], readOnly: Boolean): Unit = {
+  override def open(path: String, conf: Map[String, String], readOnly: Boolean, bulkUpload: Boolean = false): Unit = {
     require(otdb == null, "Another OptimisticTransactionDbInstance instance is already active")
     require(readOnly == false, "Cannot open OptimisticTransactionDbInstance in Readonly mode")
     try {
-      setOptions(conf)
+      setOptions(conf, bulkUpload)
       options.setCreateIfMissing(true)
       otdb = OptimisticTransactionDB.open(options, path)
       db = otdb.getBaseDB
@@ -446,6 +456,35 @@ class OptimisticTransactionDbInstance(
         createUnsafeRowPairIterator(i, readOptions, snapshot, false)
       case None =>
         Iterator.empty
+    }
+  }
+
+  def bulkUpload(rocksDbInstance: RocksDbInstance): Unit = {
+    logInfo(s"Inside bulkUpload")
+    Option(rocksDbInstance.db.getSnapshot) match {
+      case Some(snapshot) =>
+        logInfo(s"Inside bulkUpload")
+        val snapshotReadOptions: ReadOptions = new ReadOptions().setSnapshot(snapshot).setFillCache(false)
+        val itr = rocksDbInstance.db.newIterator(snapshotReadOptions)
+        itr.seekToFirst()
+        @volatile var isClosed = false
+        while(!isClosed) {
+          if (!isClosed && itr.isValid) {
+            txn.put(itr.key(), itr.value())
+          } else {
+            isClosed = true
+            commit()
+            snapshotReadOptions.close()
+            logInfo("releasing Snapshot")
+            rocksDbInstance.db.releaseSnapshot(snapshot)
+            logInfo("Closing Iterator now")
+            printMemoryStats(db)
+            itr.close()
+          }
+        }
+      case None =>
+        throw new IllegalStateException(
+          s"Error while bulkUpload. Could not create snapshot")
     }
   }
 

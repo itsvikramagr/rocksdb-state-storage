@@ -252,24 +252,24 @@ class RocksDbStateStoreSuite
     // Corrupt snapshot file and verify that it throws error
     provider.close()
     assert(getData(provider, snapshotVersion) === Set("a" -> snapshotVersion))
-    RocksDbInstance.destroyDB(provider.rocksDbPath)
+    RocksDbInstance.destroyDB(provider.rocksDbPath(snapshotVersion))
 
     corruptFile(provider, snapshotVersion, isSnapshot = true)
     intercept[Exception] {
       provider.close()
-      RocksDbInstance.destroyDB(provider.rocksDbPath)
+      RocksDbInstance.destroyDB(provider.rocksDbPath(snapshotVersion))
       getData(provider, snapshotVersion)
     }
 
     // Corrupt delta file and verify that it throws error
     provider.close()
-    RocksDbInstance.destroyDB(provider.rocksDbPath)
+    RocksDbInstance.destroyDB(provider.rocksDbPath(snapshotVersion))
     assert(getData(provider, snapshotVersion - 1) === Set("a" -> (snapshotVersion - 1)))
 
     corruptFile(provider, snapshotVersion - 1, isSnapshot = false)
     intercept[Exception] {
       provider.close()
-      RocksDbInstance.destroyDB(provider.rocksDbPath)
+      RocksDbInstance.destroyDB(provider.rocksDbPath(snapshotVersion))
       getData(provider, snapshotVersion - 1)
     }
 
@@ -277,7 +277,7 @@ class RocksDbStateStoreSuite
     deleteFilesEarlierThanVersion(provider, snapshotVersion)
     intercept[Exception] {
       provider.close()
-      RocksDbInstance.destroyDB(provider.rocksDbPath)
+      RocksDbInstance.destroyDB(provider.rocksDbPath(snapshotVersion))
       getData(provider, snapshotVersion - 1)
     }
   }

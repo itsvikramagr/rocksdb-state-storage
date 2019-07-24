@@ -93,7 +93,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
         logDebug(s"Creating Transactional DB for batch $version")
         rocksDbWriteInstance =
           new OptimisticTransactionDbInstance(keySchema, valueSchema, newVersion.toString)
-        rocksDbWriteInstance.open(rocksDbPath, rocksDbConf)
+        rocksDbWriteInstance.open(rocksDbPath(newVersion), rocksDbConf)
         state = UPDATING
         rocksDbWriteInstance.startTransactions()
       }
@@ -351,7 +351,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
     val newStore = new RocksDbStateStore(version)
     logInfo(
       s"Creating a new Store for version $version and partition ${stateStoreId_.partitionId}")
-    if (version > 0 & !checkIfStateExists(version)) {
+    if (version > 0) {
       // load the data in the rocksDB
       logInfo(s"Loading state for $version and partition ${stateStoreId_.partitionId}")
       loadState(version)
@@ -360,7 +360,24 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
   }
 
   def checkIfStateExists(version: Long): Boolean = {
-    new File(rocksDbPath, version.toString).exists()
+    new File(rocksDbPath(version)).exists()
+  }
+
+  def loadFromPrevVersion(prevV:Long, nextV: Long): Unit = {
+    log.info(s"inside loadFromPrevVersion prevv = $prevV, nextV = $nextV")
+    val prevRocksDBInstance =
+      new RocksDbInstance(keySchema, valueSchema, prevV.toString)
+    prevRocksDBInstance.open(rocksDbPath(prevV), rocksDbConf, true)
+
+    val nextRocksDBInstance =
+      new OptimisticTransactionDbInstance(keySchema, valueSchema, nextV.toString)
+    nextRocksDBInstance.open(rocksDbPath(nextV), rocksDbConf, false, true)
+    nextRocksDBInstance.startTransactions()
+
+    nextRocksDBInstance.bulkUpload(prevRocksDBInstance)
+    prevRocksDBInstance.close()
+    nextRocksDBInstance.otdb.compactRange()
+    nextRocksDBInstance.close()
   }
 
   def loadState(version: Long): Unit = {
@@ -368,14 +385,26 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
     var rocksDbWriteInstance: OptimisticTransactionDbInstance = null
     var lastAvailableVersion = version
     var found = false
+    val (_, elapsed1Ms) = Utils.timeTakenMs {
+      if (checkIfStateExists(version)) {
+        found = true
+        loadFromPrevVersion(version, version + 1)
+      }
+    }
+    logInfo(s"Loading state from prev rocksdb for $version takes $elapsed1Ms ms.")
+    if (found) {
+      return
+    }
+
     val (_, elapsedMs) = Utils.timeTakenMs {
       try {
         if (checkIfStateExists(version - 1)) {
           found = true
           lastAvailableVersion = version - 1
+          loadFromPrevVersion(lastAvailableVersion, version + 1)
         } else {
           // Destroy DB so that we can reconstruct it using snapshot and delta files
-          RocksDbInstance.destroyDB(rocksDbPath)
+          RocksDbInstance.destroyDB(rocksDbPath(version))
         }
 
         // Check for snapshot files starting from "version"
@@ -397,7 +426,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
 
         rocksDbWriteInstance =
           new OptimisticTransactionDbInstance(keySchema, valueSchema, version.toString)
-        rocksDbWriteInstance.open(rocksDbPath, rocksDbConf)
+        rocksDbWriteInstance.open(rocksDbPath(version+1), rocksDbConf, false, true)
         rocksDbWriteInstance.startTransactions()
 
         // Load all the deltas from the version after the last available
@@ -449,7 +478,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
             s"Error reading snapshot file $fileToRead of $this:" +
               s" No SST files found")
         }
-        FileUtils.moveDirectory(tmpLocDir, new File(rocksDbPath))
+        FileUtils.moveDirectory(tmpLocDir, new File(rocksDbPath(version)))
         return true
       }
     } catch {
@@ -521,7 +550,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
           val (_, e2) = Utils.timeTakenMs {
             filesToDelete.foreach { f =>
               fm.delete(f.path)
-              val file = new File(rocksDbPath, f.version.toString)
+              val file = new File(rocksDbPath(f.version))
               if (file.exists()) {
                 file.delete()
               }
@@ -579,7 +608,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
   }
 
   // making it public for unit tests
-  private[sql] lazy val rocksDbPath: String = {
+  def rocksDbPath(version: Long): String = {
     val checkpointRootLocationPath = new Path(stateStoreId.checkpointRootLocation)
     val basePath = new Path(
       localDirectory,
@@ -597,7 +626,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
       logInfo(s"creating rocksDb directory at : $dir")
       f.mkdirs()
     }
-    dir
+    dir + Path.SEPARATOR + version
   }
 
   private def getBackupPath(version: Long): String = {
