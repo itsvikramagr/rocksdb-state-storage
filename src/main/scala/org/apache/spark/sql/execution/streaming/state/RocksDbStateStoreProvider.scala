@@ -22,8 +22,8 @@ import java.util
 import java.util.Locale
 
 import scala.collection.JavaConverters._
-import scala.util.control.NonFatal
 import scala.io.Source
+import scala.util.control.NonFatal
 
 import org.apache.commons.io.FileUtils
 import org.apache.hadoop.conf.Configuration
@@ -38,11 +38,12 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.Utils
 
 /**
-  * An implementation of [[StateStoreProvider]] and [[StateStore]] using RocksDB as the storage engine. In RocksDB,
-  * new writes are inserted into a memtable which is flushed into local storage when the memtable fills up.
-  * It improves scalability as compared to [[HDFSBackedStateStoreProvider]] since now the state data which was
-  * large enough to fit in the executor memory can be written into the combination of memtable and local storage.
-  * The data is backed in a HDFS-compatible file system just like [[HDFSBackedStateStoreProvider]]
+  * An implementation of [[StateStoreProvider]] and [[StateStore]] using RocksDB as the storage
+  * engine. In RocksDB, new writes are inserted into a memtable which is flushed into local storage
+  * when the memtable fills up. It improves scalability as compared to
+  * [[HDFSBackedStateStoreProvider]] since now the state data which was large enough to fit in the
+  * executor memory can be written into the combination of memtable and local storage.The data is
+  * backed in a HDFS-compatible file system just like [[HDFSBackedStateStoreProvider]]
   *
   * Fault-tolerance model:
   * - Every set of updates is written to a delta file before committing.
@@ -50,15 +51,15 @@ import org.apache.spark.util.Utils
   * - Updates are committed in the db atomically
   *
   * Backup Model:
+  * - Delta file is written in a HDFS-compatible file system on batch commit
   * - RocksDB state is check-pointed into a separate folder on batch commit
-  * - Maintenance thread periodically takes a snapshot of the latest check-pointed version of rocksDB state which is
-  *  written to a HDFS complaint system.
+  * - Maintenance thread periodically takes a snapshot of the latest check-pointed version of
+  *   rocksDB state which is written to a HDFS-compatible file system.
   *
   * Isolation Guarantee:
   * - writes are committed in the transaction.
   * - writer thread which started the transaction can read all un-committed updates
   * - any other reader thread cannot read any un-committed updates
-  *
   */
 private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Logging {
 
@@ -122,10 +123,10 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
       if (state == LOADED && rocksDbWriteInstance == null) {
         logDebug(s"Creating Transactional DB for batch $version")
         rocksDbWriteInstance = new OptimisticTransactionDbInstance(
-            keySchema,
-            valueSchema,
-            newVersion.toString,
-            rocksDbConf)
+          keySchema,
+          valueSchema,
+          newVersion.toString,
+          rocksDbConf)
         rocksDbWriteInstance.open(rocksDbPath)
         rocksDbWriteInstance.startTransactions()
         state = UPDATING
@@ -646,10 +647,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
         new Path(
           subFolderName,
           checkpointRootLocationPath.getName + "_" + checkpointRootLocationPath.hashCode()),
-        new Path(
-          stateStoreId_.operatorId.toString,
-          stateStoreId_.partitionId.toString)
-      ))
+        new Path(stateStoreId_.operatorId.toString, stateStoreId_.partitionId.toString)))
 
     val f: File = new File(dirPath.toString)
     if (!f.exists() && !f.mkdirs()) {

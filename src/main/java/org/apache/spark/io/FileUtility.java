@@ -32,7 +32,7 @@ public class FileUtility {
   public static final String ENCODING = "utf-8";
 
   public static void extractTarFile(String inputTarFileLoc, String destDirLoc)
-      throws IllegalStateException {
+    throws IllegalStateException {
     File inputFile = new File(inputTarFileLoc);
     if (!inputTarFileLoc.endsWith(".tar")) {
       throw new IllegalStateException(String.format(
@@ -78,7 +78,7 @@ public class FileUtility {
    */
 
   public static void createTarFile(String source, String destFileLoc)
-      throws IllegalStateException {
+    throws IllegalStateException {
     File f = new File(destFileLoc);
     if (f.exists() && !f.delete()) {
       throw new IllegalStateException(String.format(

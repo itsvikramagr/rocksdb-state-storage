@@ -28,8 +28,6 @@ import sun.security.action.GetPropertyAction;
 import java.io.File;
 import java.io.IOException;
 
-import static org.junit.Assert.assertEquals;
-
 /**
  * Tests functionality of {@link FileUtility}
  */

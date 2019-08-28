@@ -125,12 +125,12 @@ object WALUtils {
   }
 
   def updateFromDeltaFile(
-      fm: CheckpointFileManager,
-      fileToRead: Path,
-      keySchema: StructType,
-      valueSchema: StructType,
-      newRocksDb: OptimisticTransactionDbInstance,
-      sparkConf: SparkConf): Unit = {
+                           fm: CheckpointFileManager,
+                           fileToRead: Path,
+                           keySchema: StructType,
+                           valueSchema: StructType,
+                           newRocksDb: OptimisticTransactionDbInstance,
+                           sparkConf: SparkConf): Unit = {
     var input: DataInputStream = null
     val sourceStream = try {
       fm.open(fileToRead)
@@ -188,8 +188,8 @@ object WALUtils {
    * @param rawStream the underlying stream which needs to be cancelled.
    */
   def cancelDeltaFile(
-      compressedStream: DataOutputStream,
-      rawStream: CancellableFSDataOutputStream): Unit = {
+                       compressedStream: DataOutputStream,
+                       rawStream: CancellableFSDataOutputStream): Unit = {
     try {
       if (rawStream != null) rawStream.cancel()
       IOUtils.closeQuietly(compressedStream)
@@ -203,10 +203,10 @@ object WALUtils {
   }
 
   def uploadFile(
-      fm: CheckpointFileManager,
-      sourceFile: Path,
-      targetFile: Path,
-      sparkConf: SparkConf): Unit = {
+                  fm: CheckpointFileManager,
+                  sourceFile: Path,
+                  targetFile: Path,
+                  sparkConf: SparkConf): Unit = {
     var output: CancellableFSDataOutputStream = null
     var in: BufferedInputStream = null
     try {
@@ -231,10 +231,10 @@ object WALUtils {
   }
 
   def downloadFile(
-      fm: CheckpointFileManager,
-      sourceFile: Path,
-      targetFile: Path,
-      sparkConf: SparkConf): Boolean = {
+                    fm: CheckpointFileManager,
+                    sourceFile: Path,
+                    targetFile: Path,
+                    sparkConf: SparkConf): Boolean = {
     var in: FSDataInputStream = null
     var output: BufferedOutputStream = null
     try {
