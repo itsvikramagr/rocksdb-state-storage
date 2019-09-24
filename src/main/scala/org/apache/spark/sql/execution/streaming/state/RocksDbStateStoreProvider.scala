@@ -37,7 +37,7 @@ import org.apache.spark.sql.execution.streaming.CheckpointFileManager
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.Utils
 
-/**
+ /*
   * An implementation of [[StateStoreProvider]] and [[StateStore]] using RocksDB as the storage
   * engine. In RocksDB, new writes are inserted into a memtable which is flushed into local storage
   * when the memtable fills up. It improves scalability as compared to
@@ -71,12 +71,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
   @volatile private var hadoopConf: Configuration = _
   @volatile private var numberOfVersionsToRetain: Int = _
   @volatile private var localDir: String = _
-
-  /*
-   * Additional configurations related to rocksDb. This will capture all configs in
-   * SQLConf that start with `spark.sql.streaming.stateStore.rocksDb`
-   */
-  @volatile private var rocksDbConf: Map[String, String] = Map.empty[String, String]
+  @volatile private var rocksDbConf: RocksDbStateStoreConf = _
 
   private lazy val baseDir: Path = stateStoreId.storeCheckpointLocation()
   private lazy val fm = CheckpointFileManager.create(baseDir, hadoopConf)
@@ -85,7 +80,6 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
   private case class StoreFile(version: Long, path: Path, isSnapshot: Boolean)
 
   import WALUtils._
-  import RocksDbStateStoreProvider._
 
   /** Implementation of [[StateStore]] API which is backed by RocksDB and HDFS */
   class RocksDbStateStore(val version: Long) extends StateStore with Logging {
@@ -236,7 +230,11 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
           } else {
             val path = getCheckpointPath(version)
             val r: RocksDbInstance =
-              new RocksDbInstance(keySchema, valueSchema, version.toString, rocksDbConf)
+              new RocksDbInstance(
+                keySchema,
+                valueSchema,
+                version.toString,
+                rocksDbConf)
             r.open(path, readOnly = true)
             r.iterator(closeDbOnCompletion = true)
           }
@@ -245,7 +243,11 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
           // use check-pointed db for current updated version
           val path = getCheckpointPath(newVersion)
           val r: RocksDbInstance =
-            new RocksDbInstance(keySchema, valueSchema, newVersion.toString, rocksDbConf)
+            new RocksDbInstance(
+              keySchema,
+              valueSchema,
+              newVersion.toString,
+              rocksDbConf)
           r.open(path, readOnly = true)
           r.iterator(closeDbOnCompletion = true)
 
@@ -304,15 +306,8 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
     this.hadoopConf = hadoopConf
     this.numberOfVersionsToRetain = storeConfs.maxVersionsToRetainInMemory
     fm.mkdirs(baseDir)
-    this.rocksDbConf = storeConf.confs
-      .filter(_._1.startsWith(ROCKS_DB_STATE_STORE_CONF_PREFIX))
-      .map {
-        case (k, v) => (k.toLowerCase(Locale.ROOT), v)
-      }
-    this.localDir = this.rocksDbConf
-      .getOrElse(
-        s"${ROCKS_DB_STATE_STORE_CONF_PREFIX}.localDir".toLowerCase(Locale.ROOT),
-        Utils.createTempDir().getAbsoluteFile.toString)
+    this.rocksDbConf = new RocksDbStateStoreConf(storeConfs)
+    this.localDir = rocksDbConf.localDir
   }
 
   /*
@@ -468,8 +463,11 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
   private def applyDelta(version: Long, lastAvailableVersion: Long): Unit = {
     var rocksDbWriteInstance: OptimisticTransactionDbInstance = null
     try {
-      rocksDbWriteInstance =
-        new OptimisticTransactionDbInstance(keySchema, valueSchema, version.toString, rocksDbConf)
+      rocksDbWriteInstance = new OptimisticTransactionDbInstance(
+        keySchema,
+        valueSchema,
+        version.toString,
+        rocksDbConf)
       rocksDbWriteInstance.open(rocksDbPath)
       rocksDbWriteInstance.startTransactions()
       // Load all the deltas from the version after the last available
@@ -611,7 +609,11 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
       if (maxVersion > 0) {
         loadIntoRocksDB(maxVersion)
         val r: RocksDbInstance =
-          new RocksDbInstance(keySchema, valueSchema, maxVersion.toString, rocksDbConf)
+          new RocksDbInstance(
+            keySchema,
+            valueSchema,
+            maxVersion.toString,
+            rocksDbConf)
         try {
           r.open(rocksDbPath, readOnly = true)
           return r.iterator(false)
@@ -660,9 +662,4 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
       new Path(dirPath, version.get).toString
     }
   }
-
-}
-
-object RocksDbStateStoreProvider {
-  val ROCKS_DB_STATE_STORE_CONF_PREFIX = "spark.sql.streaming.stateStore.rocksDb"
 }

@@ -31,7 +31,6 @@ import org.rocksdb.RocksDB
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
-import org.apache.spark.sql.execution.streaming.state.RocksDbStateStoreProvider.ROCKS_DB_STATE_STORE_CONF_PREFIX
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.Utils
 
@@ -39,7 +38,7 @@ class RocksDbInstance(
                        keySchema: StructType,
                        valueSchema: StructType,
                        version: String,
-                       conf: Map[String, String] = Map.empty)
+                       conf: RocksDbStateStoreConf)
   extends Logging {
 
   import RocksDbInstance._
@@ -196,23 +195,9 @@ class RocksDbInstance(
     }
   }
 
-  private val dataBlockSize = conf
-    .getOrElse(
-      s"${ROCKS_DB_STATE_STORE_CONF_PREFIX}.blockSizeInKB".toLowerCase(Locale.ROOT),
-      "32")
-    .toInt
-
-  private val memTableMemoryBudget = conf
-    .getOrElse(
-      s"${ROCKS_DB_STATE_STORE_CONF_PREFIX}.memtableBudgetInMB".toLowerCase(Locale.ROOT),
-      "1024")
-    .toInt
-
-  private val enableStats = conf
-    .getOrElse(
-      s"${ROCKS_DB_STATE_STORE_CONF_PREFIX}.enableDbStats".toLowerCase(Locale.ROOT),
-      "false")
-    .toBoolean
+  private val dataBlockSize = conf.blockSizeInKB
+  private val memTableMemoryBudget = conf.memtableBudgetInMB
+  private val enableStats = conf.enableStats
 
   protected def setOptions(): Unit = {
 
@@ -273,12 +258,12 @@ class OptimisticTransactionDbInstance(
                                        keySchema: StructType,
                                        valueSchema: StructType,
                                        version: String,
-                                       conf: Map[String, String] = Map.empty)
+                                       conf: RocksDbStateStoreConf)
   extends RocksDbInstance(
     keySchema: StructType,
     valueSchema: StructType,
     version: String,
-    conf: Map[String, String]) {
+    conf: RocksDbStateStoreConf) {
   import RocksDbInstance._
   RocksDB.loadLibrary()
 
@@ -424,14 +409,12 @@ object RocksDbInstance {
 
   val COMMIT_FILE_NAME = "commit"
 
-  private val DEFAULT_ROCKSDB_CACHE_SIZE_IN_MB = 512
-
   private val rocksDbCacheSizeInMB: Int = if (SparkEnv.get != null) {
     SparkEnv.get.conf.getInt(
-      s"${ROCKS_DB_STATE_STORE_CONF_PREFIX}.cacheSizeInMB",
-      DEFAULT_ROCKSDB_CACHE_SIZE_IN_MB)
+      RocksDbStateStoreConf.CACHE_SIZE_KEY,
+      RocksDbStateStoreConf.DEFAULT_CACHE_SIZE_IN_MB)
   } else {
-    DEFAULT_ROCKSDB_CACHE_SIZE_IN_MB
+    RocksDbStateStoreConf.DEFAULT_CACHE_SIZE_IN_MB
   }
 
   lazy val rocksDbLRUCache = new LRUCache(rocksDbCacheSizeInMB * 1024 * 1024, 6, false)
