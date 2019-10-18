@@ -146,6 +146,7 @@ private[sql] class RocksDbStateStoreProvider extends StateStoreProvider with Log
     override def getRange(
                            start: Option[UnsafeRow],
                            end: Option[UnsafeRow]): Iterator[UnsafeRowPair] = {
+      initTransaction()
       require(state == UPDATING, "Cannot getRange after already committed or aborted")
       iterator()
     }
